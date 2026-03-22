@@ -1992,6 +1992,10 @@ async function showComments(gid,gname){
   document.body.appendChild(m);
   await loadComments(gid);
 }
+function escapeHtml(text){
+  const map={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
+  return String(text).replace(/[&<>"']/g,m=>map[m]);
+}
 async function loadComments(gid){
   const el=document.getElementById('cmt-list-'+gid);if(!el)return;
   if(!window._db){el.innerHTML='<div style="color:var(--dim);font-size:11px;text-align:center;padding:16px">İnternet bağlantısı gerekli</div>';return;}
@@ -2000,7 +2004,7 @@ async function loadComments(gid){
     const snap=await window._fs.getDocs(q);
     const cmts=snap.docs.map(d=>d.data());
     el.innerHTML=cmts.length
-      ?cmts.map(c=>`<div class="comment-item"><div class="comment-author">${c.author}</div>${c.text}</div>`).join('')
+      ?cmts.map(c=>`<div class="comment-item"><div class="comment-author">${escapeHtml(c.author)}</div>${escapeHtml(c.text)}</div>`).join('')
       :'<div style="color:var(--dim);font-size:11px;text-align:center;padding:16px">Henüz yorum yok. İlk yorumu sen yaz!</div>';
   }catch{
     el.innerHTML='<div style="color:var(--dim);font-size:11px;text-align:center;padding:16px">Yorumlar yüklenemedi</div>';
