@@ -294,40 +294,90 @@ function buildDots(){
 function updateDots(){GAMES.forEach((_,i)=>document.getElementById('dot-'+i).className='dot'+(i===currentIndex?' active':''));}
 function fmtCount(n){return n>=1000?(n/1000).toFixed(1)+'K':n;}
 
-// ── SWIPE ─────────────────────────────────────────────────
-let touchStartTime=0;
+// ── SWIPE — Instagram tarzı gerçek zamanlı sürükleme ──────
+let _swipeDragging=false,_swipeActive=false;
+const SWIPE_COMMIT=75; // px — bu kadar sürüklenince geçiş tamamlanır
+const T_EASE='transform 0.32s cubic-bezier(0.4,0,0.2,1)';
+
+function _preAdjacentSlides(){
+  // Komşu slide'ları ekran dışına hazırla (geçişsiz, görsel etki yok)
+  const p=currentIndex>0?document.getElementById('slide-'+(currentIndex-1)):null;
+  const n=currentIndex<GAMES.length-1?document.getElementById('slide-'+(currentIndex+1)):null;
+  if(p){p.style.transition='none';p.style.transform='translateY(-100%)';}
+  if(n){n.style.transition='none';n.style.transform='translateY(100%)';}
+}
+
 document.addEventListener('touchstart',e=>{
   touchStartY=e.touches[0].clientY;
   touchStartX=e.touches[0].clientX;
-  touchStartTime=Date.now();
+  _swipeDragging=false;
+  _swipeActive=true;
+  if(!swipeLocked)_preAdjacentSlides();
 },{passive:true});
+
+document.addEventListener('touchmove',e=>{
+  if(!_swipeActive||swipeLocked)return;
+  const dy=e.touches[0].clientY-touchStartY;
+  const dx=Math.abs(e.touches[0].clientX-touchStartX);
+
+  // Yatay hareket → iptal
+  if(!_swipeDragging){
+    if(Math.abs(dy)<10)return;
+    if(dx>Math.abs(dy)*0.65){_swipeActive=false;return;}
+    _swipeDragging=true;
+  }
+
+  const cur=document.getElementById('slide-'+currentIndex);
+  // Kenar direnci (ilk/son slide'da rubber-band)
+  let offset=dy;
+  if((dy>0&&currentIndex===0)||(dy<0&&currentIndex===GAMES.length-1))
+    offset=dy*0.18;
+
+  cur.style.transition='none';
+  cur.style.transform=`translateY(${offset}px)`;
+
+  // Komşu slide'ı parmakla birlikte kaydır
+  if(dy<0&&currentIndex<GAMES.length-1){
+    const n=document.getElementById('slide-'+(currentIndex+1));
+    if(n){n.style.transition='none';n.style.transform=`translateY(calc(100% + ${offset}px))`;}
+  }else if(dy>0&&currentIndex>0){
+    const p=document.getElementById('slide-'+(currentIndex-1));
+    if(p){p.style.transition='none';p.style.transform=`translateY(calc(-100% + ${offset}px))`;}
+  }
+},{passive:true});
+
 document.addEventListener('touchend',e=>{
-  if(swipeLocked)return;
-  const dy=touchStartY-e.changedTouches[0].clientY;
-  const dx=Math.abs(touchStartX-e.changedTouches[0].clientX);
-  const dt=Date.now()-touchStartTime;
-  // must be fast enough (not a slow press) and far enough
-  const speed=Math.abs(dy)/dt;
-  if(Math.abs(dy)<60)return;               // too short
-  if(dx>Math.abs(dy)*0.6)return;           // too horizontal
-  if(speed<0.18)return;                    // too slow
-  if(dt>800)return;                        // held too long
-  if(dy>0&&currentIndex<GAMES.length-1)goTo(currentIndex+1,'up');
-  else if(dy<0&&currentIndex>0)goTo(currentIndex-1,'down');
+  _swipeActive=false;
+  if(swipeLocked||!_swipeDragging){_swipeDragging=false;return;}
+  _swipeDragging=false;
+  const dy=e.changedTouches[0].clientY-touchStartY;
+
+  if(dy<-SWIPE_COMMIT&&currentIndex<GAMES.length-1){
+    goTo(currentIndex+1,'up');
+  }else if(dy>SWIPE_COMMIT&&currentIndex>0){
+    goTo(currentIndex-1,'down');
+  }else{
+    // Eşiğe ulaşılmadı — geri snap
+    const cur=document.getElementById('slide-'+currentIndex);
+    cur.style.transition=T_EASE;cur.style.transform='translateY(0)';
+    if(dy<0&&currentIndex<GAMES.length-1){
+      const n=document.getElementById('slide-'+(currentIndex+1));
+      if(n){n.style.transition=T_EASE;n.style.transform='translateY(100%)';}
+    }else if(dy>0&&currentIndex>0){
+      const p=document.getElementById('slide-'+(currentIndex-1));
+      if(p){p.style.transition=T_EASE;p.style.transform='translateY(-100%)';}
+    }
+  }
 },{passive:true});
 
 function goTo(index,dir){
   const prev=currentIndex;currentIndex=index;
   const ps=document.getElementById('slide-'+prev);
   const ns=document.getElementById('slide-'+index);
-  ns.style.transition='none';
-  ns.style.transform=dir==='up'?'translateY(100%)':'translateY(-100%)';
-  requestAnimationFrame(()=>requestAnimationFrame(()=>{
-    const t='transform 0.32s cubic-bezier(0.4,0,0.2,1)';
-    ps.style.transition=t;ns.style.transition=t;
-    ps.style.transform=dir==='up'?'translateY(-100%)':'translateY(100%)';
-    ns.style.transform='translateY(0)';
-  }));
+  // Slide'lar drag sırasında zaten kısmen konumlandırıldı — sadece hedef konuma animasyon yap
+  ps.style.transition=T_EASE;ns.style.transition=T_EASE;
+  ps.style.transform=dir==='up'?'translateY(-100%)':'translateY(100%)';
+  ns.style.transform='translateY(0)';
   updateDots();pauseGame(GAMES[prev].id);startGame(GAMES[index].id);
 }
 function toggleLock(){
@@ -560,7 +610,7 @@ function runLoop(id){
   else if(id==='tetris')tetrisLoop();
   else if(id==='flappy')flappyLoop();
   else if(id==='blockblast')bbDraw();
-  else if(id==='candy')ccDraw();
+  else if(id==='candy'){if(!CC.over){CC._last=0;gameLoops['candy']=requestAnimationFrame(ccAnimLoop);}} // düzeltildi
   else if(id==='space')spaceLoop();
   else if(id==='dino')dinoLoop();
 }
@@ -1097,7 +1147,7 @@ function initCandy(){
   cv.addEventListener('mousedown',e=>{const rc=cv.getBoundingClientRect(),sx=cv.width/rc.width,sy=cv.height/rc.height;ccDS((e.clientX-rc.left)*sx,(e.clientY-rc.top)*sy);});
   cv.addEventListener('mousemove',e=>{if(!CC.drag)return;const rc=cv.getBoundingClientRect(),sx=cv.width/rc.width,sy=cv.height/rc.height;ccDM((e.clientX-rc.left)*sx,(e.clientY-rc.top)*sy);});
   cv.addEventListener('mouseup',e=>{const rc=cv.getBoundingClientRect(),sx=cv.width/rc.width,sy=cv.height/rc.height;ccDE((e.clientX-rc.left)*sx,(e.clientY-rc.top)*sy);});
-  gameStates['candy']=CC;ccAnimLoop();
+  gameStates['candy']=CC;gameLoops['candy']=requestAnimationFrame(ccAnimLoop);
 }
 function ccGen(rows,cols){
   const b=Array.from({length:rows},()=>Array(cols).fill(0));
@@ -1166,12 +1216,13 @@ function ccMatches(){
 }
 function ccEase(t){return t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2;}
 function ccAnimLoop(){
+  if(CC.over){gameLoops['candy']=null;return;} // oyun bittiyse döngüyü durdur
   const now=performance.now();const dt=Math.min(now-(CC._last||now),50);CC._last=now;
   if(CC.swapAnim){CC.swapAnim.t=Math.min(CC.swapAnim.t+dt,CC.swapAnim.dur);if(CC.swapAnim.t>=CC.swapAnim.dur)CC.swapAnim.onDone();}
   if(CC.popAnim){CC.popAnim.cells.forEach(c=>c.t=Math.min(c.t+dt,CC.popAnim.dur));if(CC.popAnim.cells.every(c=>c.t>=CC.popAnim.dur))CC.popAnim.onDone();}
   if(CC.fallAnim){CC.fallAnim.t=Math.min(CC.fallAnim.t+dt,CC.fallAnim.dur);if(CC.fallAnim.t>=CC.fallAnim.dur)CC.fallAnim.onDone();}
   ccDraw();
-  requestAnimationFrame(ccAnimLoop);
+  gameLoops['candy']=requestAnimationFrame(ccAnimLoop); // ID kaydediliyor
 }
 function ccShapeAt(ctx,cx,cy,R,shape){
   if(shape===0){ctx.beginPath();ctx.arc(cx,cy,R,0,Math.PI*2);}
@@ -1354,14 +1405,15 @@ function initSpace(){
   gameStates['space']=SP;
   document.getElementById('score-space').textContent='0';
 
-  ncv.addEventListener('touchstart',e=>{if(SP.over)return;SP.touchX=e.touches[0].clientX;},{passive:true});
+  ncv.addEventListener('touchstart',e=>{if(SP.over)return;e.stopPropagation();SP.touchX=e.touches[0].clientX;},{passive:true});
   ncv.addEventListener('touchmove',e=>{
     if(SP.over||SP.touchX===null)return;
+    e.stopPropagation(); // gemi hareketinin swipe'ı tetiklememesi için
     const dx=(e.touches[0].clientX-SP.touchX)*1.15;
     SP.touchX=e.touches[0].clientX;
     SP.px=Math.max(SP.pw+2,Math.min(SP.W-SP.pw-2,SP.px+dx));
   },{passive:true});
-  ncv.addEventListener('touchend',()=>{SP.touchX=null;},{passive:true});
+  ncv.addEventListener('touchend',e=>{if(!SP.over)e.stopPropagation();SP.touchX=null;},{passive:true});
 
   spaceLoop();
 }
@@ -1531,7 +1583,8 @@ function initDino(){
 
   // Touch controls — tap/press left side = jump, right side = duck
   ncv.addEventListener('touchstart',e=>{
-    if(DN.over)return;
+    if(DN.over)return; // oyun bitince → propagation'ı durdurma → kullanıcı swipe yapabilsin
+    e.stopPropagation();
     e.preventDefault();
     const tx=e.touches[0].clientX;
     const rect=ncv.getBoundingClientRect();
@@ -1539,7 +1592,7 @@ function initDino(){
     if(!DN.started){DN.started=true;dinoJump();return;}
     if(rel>0.5){DN.ducking=true;}else{dinoJump();}
   },{passive:false});
-  ncv.addEventListener('touchend',e=>{DN.ducking=false;},{passive:true});
+  ncv.addEventListener('touchend',e=>{if(!DN.over)e.stopPropagation();DN.ducking=false;},{passive:true});
 
   dinoLoop();
 }
@@ -1563,10 +1616,10 @@ function dinoDrawDino(ctx,x,y,ducking,legPhase,over){
     ctx.fillStyle=c2;
     ctx.beginPath();ctx.moveTo(-18,18);ctx.lineTo(-2,10);ctx.lineTo(-2,22);ctx.closePath();ctx.fill();
     // Body
-    ctx.fillStyle=c1;ctx.beginPath();ctx.roundRect(0,8,46,24,8);ctx.fill();
-    ctx.fillStyle=cB;ctx.beginPath();ctx.roundRect(4,11,38,10,4);ctx.fill();
+    ctx.fillStyle=c1;bbRR(ctx,0,8,46,24,8);ctx.fill();
+    ctx.fillStyle=cB;bbRR(ctx,4,11,38,10,4);ctx.fill();
     // Head
-    ctx.fillStyle=c1;ctx.beginPath();ctx.roundRect(38,0,28,20,6);ctx.fill();
+    ctx.fillStyle=c1;bbRR(ctx,38,0,28,20,6);ctx.fill();
     ctx.fillStyle=c2;ctx.fillRect(64,8,6,5); // mouth
     // Eye
     ctx.fillStyle=c3;ctx.beginPath();ctx.arc(60,6,4,0,Math.PI*2);ctx.fill();
@@ -1583,21 +1636,21 @@ function dinoDrawDino(ctx,x,y,ducking,legPhase,over){
     ctx.fillStyle=c2;
     ctx.beginPath();ctx.moveTo(-2,26);ctx.lineTo(-20,18);ctx.lineTo(-16,30);ctx.lineTo(-2,38);ctx.closePath();ctx.fill();
     // Body
-    ctx.fillStyle=c1;ctx.beginPath();ctx.roundRect(0,10,34,32,10);ctx.fill();
-    ctx.fillStyle=cB;ctx.beginPath();ctx.roundRect(4,14,26,14,5);ctx.fill();
+    ctx.fillStyle=c1;bbRR(ctx,0,10,34,32,10);ctx.fill();
+    ctx.fillStyle=cB;bbRR(ctx,4,14,26,14,5);ctx.fill();
     // Belly
     ctx.fillStyle='#c8e890';ctx.beginPath();ctx.ellipse(18,34,10,8,0,0,Math.PI*2);ctx.fill();
     // Tiny arm
-    ctx.fillStyle=c2;ctx.beginPath();ctx.roundRect(26,20,10,7,3);ctx.fill();
+    ctx.fillStyle=c2;bbRR(ctx,26,20,10,7,3);ctx.fill();
     ctx.fillRect(33,23,5,4); // tiny claw
     // Neck
-    ctx.fillStyle=c1;ctx.beginPath();ctx.roundRect(22,0,16,18,6);ctx.fill();
+    ctx.fillStyle=c1;bbRR(ctx,22,0,16,18,6);ctx.fill();
     // Head
-    ctx.fillStyle=c1;ctx.beginPath();ctx.roundRect(20,-14,32,24,7);ctx.fill();
+    ctx.fillStyle=c1;bbRR(ctx,20,-14,32,24,7);ctx.fill();
     // Top bump (dino head crest)
     ctx.fillStyle=c2;ctx.beginPath();ctx.ellipse(30,-14,8,5,0,0,Math.PI*2);ctx.fill();
     // Snout
-    ctx.fillStyle=c1;ctx.beginPath();ctx.roundRect(46,-6,12,14,4);ctx.fill();
+    ctx.fillStyle=c1;bbRR(ctx,46,-6,12,14,4);ctx.fill();
     ctx.fillStyle=c3;ctx.fillRect(50,6,8,3); // lower jaw line
     // Nostril
     ctx.fillStyle=c3;ctx.beginPath();ctx.arc(55,-2,2,0,Math.PI*2);ctx.fill();
@@ -1992,10 +2045,6 @@ async function showComments(gid,gname){
   document.body.appendChild(m);
   await loadComments(gid);
 }
-function escapeHtml(text){
-  const map={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
-  return String(text).replace(/[&<>"']/g,m=>map[m]);
-}
 async function loadComments(gid){
   const el=document.getElementById('cmt-list-'+gid);if(!el)return;
   if(!window._db){el.innerHTML='<div style="color:var(--dim);font-size:11px;text-align:center;padding:16px">İnternet bağlantısı gerekli</div>';return;}
@@ -2004,7 +2053,7 @@ async function loadComments(gid){
     const snap=await window._fs.getDocs(q);
     const cmts=snap.docs.map(d=>d.data());
     el.innerHTML=cmts.length
-      ?cmts.map(c=>`<div class="comment-item"><div class="comment-author">${escapeHtml(c.author)}</div>${escapeHtml(c.text)}</div>`).join('')
+      ?cmts.map(c=>`<div class="comment-item"><div class="comment-author">${c.author}</div>${c.text}</div>`).join('')
       :'<div style="color:var(--dim);font-size:11px;text-align:center;padding:16px">Henüz yorum yok. İlk yorumu sen yaz!</div>';
   }catch{
     el.innerHTML='<div style="color:var(--dim);font-size:11px;text-align:center;padding:16px">Yorumlar yüklenemedi</div>';
