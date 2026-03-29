@@ -1,4 +1,4 @@
-﻿// ── ROOT RESIZE ───────────────────────────────────────────
+// ── ROOT RESIZE ───────────────────────────────────────────
 function setRootH(){
   const r=document.getElementById('root');
   r.style.height=window.innerHeight+'px';
@@ -217,6 +217,20 @@ document.addEventListener('touchend',e=>{
     }
   }
 },{passive:true});
+let _lastWheelNav=0;
+function _anyModalOpen(){return!!document.querySelector('.modal-overlay');}
+(function(){
+  const root=document.getElementById('root');if(!root)return;
+  root.addEventListener('wheel',e=>{
+    if(swipeLocked||_anyModalOpen())return;
+    if(e.ctrlKey)return;
+    const now=performance.now();if(now-_lastWheelNav<400)return;
+    if(Math.abs(e.deltaY)<20)return;
+    e.preventDefault();_lastWheelNav=now;
+    if(e.deltaY>0&&currentIndex<GAMES.length-1)goTo(currentIndex+1,'up');
+    else if(e.deltaY<0&&currentIndex>0)goTo(currentIndex-1,'down');
+  },{passive:false});
+})();
 
 function goTo(index,dir){
   const prev=currentIndex;currentIndex=index;
@@ -246,39 +260,58 @@ function setLikedCache(arr){
   localStorage.setItem('liked_'+user.uid,JSON.stringify(arr));
 }
 
-async function loadFirebaseLikes(){
-  if(!window._db)return;
-  // Load global counts
-  for(let i=0;i<GAMES.length;i++){
-    try{
-      const d=await window._fs.getDoc(window._fs.doc(window._db,'likes',GAMES[i].id));
-      likes[i]=d.exists()?d.data().count||0:0;
-      document.getElementById('like-count-'+i).textContent=fmtCount(likes[i]);
-    }catch{}
-  }
-  // Load user liked state — first from localStorage cache (instant), then verify with Firebase
-  const user=getUser();
-  if(!user)return;
-  const cache=getLikedCache();
-  // Apply cache immediately so UI is instant
+let _likeCountUnsubs=[],_userLikesUnsub=null;
+function _stopLikeCountListeners(){_likeCountUnsubs.forEach(u=>u());_likeCountUnsubs=[];}
+function _applyLikedIdsToUi(likedIds){
+  const set=new Set(likedIds||[]);
   GAMES.forEach((g,i)=>{
-    liked[i]=cache.includes(g.id);
+    liked[i]=set.has(g.id);
     const btn=document.getElementById('like-btn-'+i);if(!btn)return;
     btn.classList.toggle('liked',liked[i]);
-    btn.querySelector('.icon').textContent=liked[i]?'❤️':'🤍';
+    const ic=btn.querySelector('.icon');if(ic)ic.textContent=liked[i]?'❤️':'🤍';
   });
-  // Then verify/sync from Firebase
-  try{
-    const d=await window._fs.getDoc(window._fs.doc(window._db,'userLikes',user.uid));
-    const likedIds=d.exists()?d.data().games||[]:[];
-    setLikedCache(likedIds); // update cache
-    GAMES.forEach((g,i)=>{
-      liked[i]=likedIds.includes(g.id);
+}
+function subscribeLikeCountDocs(){
+  _stopLikeCountListeners();
+  if(!window._db)return;
+  GAMES.forEach((g,i)=>{
+    const ref=window._fs.doc(window._db,'likes',g.id);
+    const unsub=window._fs.onSnapshot(ref,snap=>{
+      const c=snap.exists()?snap.data().count||0:0;
+      likes[i]=typeof c==='number'&&!isNaN(c)?c:0;
+      const el=document.getElementById('like-count-'+i);
+      if(el)el.textContent=fmtCount(likes[i]);
+    },err=>{console.warn('[NeonFlow] beğeni sayacı:',g.id,err);});
+    _likeCountUnsubs.push(unsub);
+  });
+}
+function subscribeUserLikesDoc(uid){
+  if(_userLikesUnsub){_userLikesUnsub();_userLikesUnsub=null;}
+  if(!window._db||!uid)return;
+  const ref=window._fs.doc(window._db,'userLikes',uid);
+  _userLikesUnsub=window._fs.onSnapshot(ref,snap=>{
+    const likedIds=snap.exists()?(snap.data().games||[]):[];
+    setLikedCache(likedIds);
+    _applyLikedIdsToUi(likedIds);
+  },err=>{console.warn('[NeonFlow] kullanıcı beğenileri:',err);});
+}
+
+function loadFirebaseLikes(){
+  if(!window._db)return;
+  subscribeLikeCountDocs();
+  const user=getUser();
+  subscribeUserLikesDoc(user?user.uid:null);
+  if(user){
+    const cache=getLikedCache();
+    _applyLikedIdsToUi(cache);
+  }else{
+    GAMES.forEach((_,i)=>{
+      liked[i]=false;
       const btn=document.getElementById('like-btn-'+i);if(!btn)return;
-      btn.classList.toggle('liked',liked[i]);
-      btn.querySelector('.icon').textContent=liked[i]?'❤️':'🤍';
+      btn.classList.remove('liked');
+      const ic=btn.querySelector('.icon');if(ic)ic.textContent='🤍';
     });
-  }catch{}
+  }
 }
 
 async function toggleLike(i){
@@ -286,28 +319,32 @@ async function toggleLike(i){
   if(!user){openProfile();return;}
   if(!window._db)return;
   const gid=GAMES[i].id;
-  // Sadece 1 beğeni — zaten beğendiyse işlem yapma
   if(liked[i])return;
   liked[i]=true;
   likes[i]++;
   const btn=document.getElementById('like-btn-'+i);
   btn.classList.add('liked');
-  btn.querySelector('.icon').textContent='❤️';
+  const ic=btn.querySelector('.icon');if(ic)ic.textContent='❤️';
   document.getElementById('like-count-'+i).textContent=fmtCount(likes[i]);
-  // localStorage cache güncelle
   const cache=getLikedCache();
   if(!cache.includes(gid)){cache.push(gid);setLikedCache(cache);}
   try{
-    // Global sayaç +1
     await window._fs.setDoc(window._fs.doc(window._db,'likes',gid),{count:window._fs.increment(1)},{merge:true});
-    // Kullanıcının beğeni listesi güncelle
     const uRef=window._fs.doc(window._db,'userLikes',user.uid);
     const uDoc=await window._fs.getDoc(uRef);
     const arr=uDoc.exists()?uDoc.data().games||[]:[];
     if(!arr.includes(gid)){arr.push(gid);await window._fs.setDoc(uRef,{games:arr});}
-  }catch{}
+  }catch(e){
+    console.warn('[NeonFlow] beğeni kaydedilemedi',e);
+    liked[i]=false;
+    likes[i]=Math.max(0,likes[i]-1);
+    btn.classList.remove('liked');
+    if(ic)ic.textContent='🤍';
+    document.getElementById('like-count-'+i).textContent=fmtCount(likes[i]);
+    const c2=getLikedCache();
+    const ix=c2.indexOf(gid);if(ix>=0){c2.splice(ix,1);setLikedCache(c2);}
+  }
 }
-
 // ── LEADERBOARD ───────────────────────────────────────────
 async function showLeaderboard(gameId){
   const user=getUser();
@@ -431,12 +468,15 @@ function getMyScores(){
   });
 }
 async function getMyLikedGames(){
-  const user=getUser();if(!user||!window._db)return[];
-  try{
-    const d=await window._fs.getDoc(window._fs.doc(window._db,'userLikes',user.uid));
-    const likedIds=d.exists()?d.data().games||[]:[];
-    return GAMES_BASE.filter(g=>likedIds.includes(g.id));
-  }catch{return[];}
+  const user=getUser();if(!user)return[];
+  const idSet=new Set(getLikedCache());
+  if(window._db){
+    try{
+      const d=await window._fs.getDoc(window._fs.doc(window._db,'userLikes',user.uid));
+      if(d.exists())(d.data().games||[]).forEach(id=>idSet.add(id));
+    }catch{}
+  }
+  return GAMES_BASE.filter(g=>idSet.has(g.id));
 }
 async function openProfile(){
   const user=getUser();
@@ -450,7 +490,6 @@ async function openProfile(){
       <button onclick="this.closest('.modal-overlay').remove()" style="width:260px;padding:9px;background:transparent;border:1px solid var(--border);border-radius:20px;color:var(--dim);font-family:inherit;font-size:10px;letter-spacing:2px;cursor:pointer;margin-bottom:8px">KAPAT</button>
       <button onclick="logoutUser(this)" style="width:260px;padding:9px;background:rgba(255,45,85,0.1);border:1px solid var(--accent);border-radius:20px;color:var(--accent);font-family:inherit;font-size:11px;letter-spacing:2px;cursor:pointer">ÇIKIŞ YAP</button>
     </div>`;
-    document.body.appendChild(m);
     // Load async data
     const [likedGames]=await Promise.all([getMyLikedGames()]);
     const scores=getMyScores();
